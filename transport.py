@@ -47,6 +47,7 @@ class SerialTransportProtocol(asyncio.Protocol):
         self.transport = transport
         self.transport_instance.transport = transport
         self.transport_instance.is_connected = True
+        self.transport_instance.connection_event.set()  # Signal connection is ready
         print(f'Serial port opened: {transport}')
         
         if hasattr(transport, 'serial'):
@@ -59,6 +60,7 @@ class SerialTransportProtocol(asyncio.Protocol):
     def connection_lost(self, exc):
         print('Serial port closed')
         self.transport_instance.is_connected = False
+        self.transport_instance.connection_event.clear()  # Clear the event
         if self.transport_instance.connection_lost_callback:
             self.transport_instance.connection_lost_callback(exc)
 
@@ -73,10 +75,13 @@ class SerialTransport(Transport):
         self.timeout = timeout
         self.transport = None
         self.protocol = None
+        self.connection_event = asyncio.Event()
     
     async def connect(self) -> bool:
         """Connect to the serial port."""
         try:
+            self.connection_event.clear()
+            
             loop = asyncio.get_event_loop()
             self.protocol = SerialTransportProtocol(self)
             
@@ -87,6 +92,7 @@ class SerialTransport(Transport):
                 baudrate=self.baudrate
             )
             
+            await asyncio.wait_for(self.connection_event.wait(), timeout=1.0)
             return self.is_connected
         except Exception as e:
             print(f"Failed to connect to {self.port}: {e}")
