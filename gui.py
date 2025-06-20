@@ -45,6 +45,8 @@ class AsyncController(QObject):
         except Exception as e:
             self.error_occurred.emit(f"Connection error: {str(e)}")
             self.connection_status_changed.emit(False, f"Error: {str(e)}")
+            self.interrogator = None
+            self.transport = None
     
     async def disconnect_from_port(self):
         """Disconnect from the current port"""
@@ -53,9 +55,12 @@ class AsyncController(QObject):
                 await self.interrogator.disconnect()
                 self.interrogator = None
                 self.transport = None
-                self.connection_status_changed.emit(False, "Disconnected")
+            self.connection_status_changed.emit(False, "Disconnected")
         except Exception as e:
             self.error_occurred.emit(f"Disconnect error: {str(e)}")
+            self.connection_status_changed.emit(False, f"Disconnect error: {str(e)}")
+            self.interrogator = None
+            self.transport = None
     
     async def perform_single_read(self):
         """Perform a single RFID read operation"""
@@ -230,12 +235,17 @@ class RFIDReaderGUI(QMainWindow):
         """Connect to the selected serial port"""
         port_text = self.port_combo.currentText()
         
-        if ' - ' in port_text:
-            port = self.port_combo.currentData() or port_text.split(' - ')[0]
-        else:
-            port = port_text
+        port = self.port_combo.currentData()
         
-        if not port or port == "No additional ports found":
+        if not port:
+            if ' - ' in port_text:
+                port = port_text.split(' - ')[0]
+            else:
+                port = port_text
+            
+            port = port.split(' ✓')[0].split(' (')[0].strip()
+        
+        if not port or port == "No serial ports found":
             QMessageBox.warning(self, "Warning", "Please select a valid serial port")
             return
         
@@ -275,6 +285,7 @@ class RFIDReaderGUI(QMainWindow):
     
     def update_connection_status(self, connected: bool, message: str):
         """Update the connection status"""
+        print(f"DEBUG: update_connection_status called with connected={connected}, message='{message}'")
         self.is_connected = connected
         
         self.connect_button.setEnabled(not connected)
@@ -287,6 +298,7 @@ class RFIDReaderGUI(QMainWindow):
             self.connect_button.setText("Connect")
         
         self.status_bar.showMessage(message)
+        print(f"DEBUG: Button states - Connect: {self.connect_button.isEnabled()}, Disconnect: {self.disconnect_button.isEnabled()}, Single Read: {self.single_read_button.isEnabled()}")
     
     def closeEvent(self, event):
         """Handle application close event"""
