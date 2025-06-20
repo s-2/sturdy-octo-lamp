@@ -244,11 +244,11 @@ class RFIDReaderGUI(QMainWindow):
         self.connect_button.setEnabled(False)
         self.status_bar.showMessage(f"Connecting to {port}...")
         
-        asyncio.create_task(self.controller.connect_to_port(port, flavor))
+        self._schedule_async_task(self.controller.connect_to_port(port, flavor))
     
     def disconnect(self):
         """Disconnect from the current port"""
-        asyncio.create_task(self.controller.disconnect_from_port())
+        self._schedule_async_task(self.controller.disconnect_from_port())
     
     def perform_single_read(self):
         """Perform a single RFID read operation"""
@@ -259,7 +259,7 @@ class RFIDReaderGUI(QMainWindow):
         self.single_read_button.setEnabled(False)
         self.status_bar.showMessage("Reading RFID tag...")
         
-        asyncio.create_task(self.controller.perform_single_read())
+        self._schedule_async_task(self.controller.perform_single_read())
     
     def display_result(self, result: str):
         """Display the read result in the text area"""
@@ -291,8 +291,16 @@ class RFIDReaderGUI(QMainWindow):
     def closeEvent(self, event):
         """Handle application close event"""
         if self.is_connected:
-            asyncio.create_task(self.controller.disconnect_from_port())
+            self._schedule_async_task(self.controller.disconnect_from_port())
         event.accept()
+    
+    def _schedule_async_task(self, coro):
+        """Schedule an async task in the current event loop"""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            QTimer.singleShot(0, lambda: asyncio.ensure_future(coro))
 
 
 def main():
