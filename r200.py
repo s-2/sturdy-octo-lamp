@@ -350,13 +350,42 @@ def em4325_temp():
     # result: 00 00  00 00  00 00  0E C0
 
 
-# r200 = R200Interrogator()
-r200 = R200Interrogator('BB7E')
+def main():
+    """Main entry point for R200 reader application"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='R200 RFID Reader Control')
+    parser.add_argument('--mode', choices=['cli', 'gui'], default='cli',
+                       help='Run in CLI or GUI mode (default: cli)')
+    parser.add_argument('--port', default='/dev/ttyUSB0',
+                       help='Serial port to use (default: /dev/ttyUSB0)')
+    parser.add_argument('--flavor', choices=['AADD', 'BB7E'], default='BB7E',
+                       help='Protocol flavor (default: BB7E)')
+    parser.add_argument('--single', action='store_true',
+                       help='Perform single read and exit')
+    parser.add_argument('--animate', action='store_true',
+                       help='Run LED animation (continuous)')
+    
+    args = parser.parse_args()
+    
+    if args.mode == 'gui':
+        from gui import main as gui_main
+        gui_main()
+    else:
+        r200 = R200Interrogator(args.flavor)
+        
+        r200.send_command(CMD_DENSE_READER_MODE)
+        
+        if args.single:
+            response = r200.send_command(CMD_SINGLE)
+            if response:
+                parse(response)
+        elif args.animate:
+            r200.led_animate()
+        else:
+            print("R200 Interrogator initialized. Use --single for single read or --animate for LED animation.")
+            print("Or use --mode gui to launch the GUI interface.")
 
-# set dense reader mode:    AA 00 F5 00 01 01 F7 DD
-r200.send_command(CMD_DENSE_READER_MODE)
 
-# flash_led()
-# r200.modify_access_password()
-
-r200.led_animate()
+if __name__ == '__main__':
+    main()
