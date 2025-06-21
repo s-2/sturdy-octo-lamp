@@ -4,13 +4,17 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QComboBox, QPushButton, QPlainTextEdit, QLabel, QStatusBar,
-    QGroupBox, QMessageBox, QLineEdit
+    QGroupBox, QMessageBox, QLineEdit, QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 import serial.tools.list_ports
 from transport import SerialTransport
 from serialinterface import AsyncR200Interrogator
+from device_detection import (
+    ReaderDetectionManager, R200DetectorAADD, R200DetectorBB7E, 
+    CF600Detector, HYB506Detector, DetectedReader
+)
 
 try:
     import qasyncio
@@ -25,11 +29,14 @@ class AsyncController(QObject):
     result_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     connection_status_changed = pyqtSignal(bool, str)
+    readers_detected = pyqtSignal(list)
     
     def __init__(self):
         super().__init__()
         self.interrogator: Optional[AsyncR200Interrogator] = None
         self.transport: Optional[SerialTransport] = None
+        self.detected_readers = {}  # Dictionary to track reader instances by port
+        self.detection_manager = ReaderDetectionManager()
     
     async def connect_to_port(self, port: str, flavor: str = 'AADD'):
         """Connect to the specified serial port"""
@@ -77,6 +84,45 @@ class AsyncController(QObject):
                 self.result_ready.emit("No tag detected or timeout")
         except Exception as e:
             self.error_occurred.emit(f"Read error: {str(e)}")
+    
+    async def detect_readers_async(self):
+        """Detect all available readers and emit results"""
+        try:
+            self.detection_manager.register_detector(R200DetectorAADD())
+            self.detection_manager.register_detector(R200DetectorBB7E())
+            self.detection_manager.register_detector(CF600Detector())
+            self.detection_manager.register_detector(HYB506Detector())
+            
+            detected_readers = await self.detection_manager.detect_all_readers_async()
+            
+            self.detected_readers.clear()
+            for reader in detected_readers:
+                self.detected_readers[reader.port] = reader
+            
+            self.readers_detected.emit(detected_readers)
+            
+        except Exception as e:
+            self.error_occurred.emit(f"Detection error: {str(e)}")
+    
+    async def perform_single_read_on_reader(self, selected_reader: 'DetectedReader'):
+        """Perform single read operation on a specific detected reader"""
+        try:
+            if "R200" in selected_reader.reader_type:
+                controller = AsyncR200Interrogator()
+                await controller.connect_to_port(selected_reader.port)
+                result = await controller.perform_single_read()
+                await controller.disconnect_from_port()
+                
+                if result:
+                    hex_result = ''.join('{:02X}'.format(x) for x in result)
+                    self.result_ready.emit(f"{selected_reader.reader_type}: {hex_result}")
+                else:
+                    self.result_ready.emit(f"{selected_reader.reader_type}: No tag detected")
+            else:
+                self.error_occurred.emit(f"Single read not yet implemented for {selected_reader.reader_type}")
+                
+        except Exception as e:
+            self.error_occurred.emit(f"Read error on {selected_reader.reader_type}: {str(e)}")
 
 
 class RFIDReaderGUI(QMainWindow):
@@ -86,8 +132,11 @@ class RFIDReaderGUI(QMainWindow):
         super().__init__()
         self.controller = AsyncController()
         self.is_connected = False
+        self.selected_reader = None
+        self.detection_manager = ReaderDetectionManager()
         self.init_ui()
         self.setup_controller()
+        self.setup_detection_manager()
         self.refresh_ports()
     
     def init_ui(self):
@@ -141,6 +190,23 @@ class RFIDReaderGUI(QMainWindow):
         
         layout.addWidget(connection_group)
         
+        readers_group = QGroupBox("Detected Readers")
+        readers_layout = QVBoxLayout(readers_group)
+        
+        self.readers_list = QListWidget()
+        self.readers_list.setMaximumHeight(120)
+        self.readers_list.itemSelectionChanged.connect(self.on_reader_selection_changed)
+        readers_layout.addWidget(self.readers_list)
+        
+        readers_button_layout = QHBoxLayout()
+        self.detect_readers_button = QPushButton("Detect Readers")
+        self.detect_readers_button.clicked.connect(self.detect_readers)
+        readers_button_layout.addWidget(self.detect_readers_button)
+        readers_button_layout.addStretch()
+        readers_layout.addLayout(readers_button_layout)
+        
+        layout.addWidget(readers_group)
+        
         operations_group = QGroupBox("Operations")
         operations_layout = QVBoxLayout(operations_group)
         
@@ -177,6 +243,7 @@ class RFIDReaderGUI(QMainWindow):
         self.controller.result_ready.connect(self.display_result)
         self.controller.error_occurred.connect(self.display_error)
         self.controller.connection_status_changed.connect(self.update_connection_status)
+        self.controller.readers_detected.connect(self._update_readers_list)
     
     def refresh_ports(self):
         """Refresh the list of available serial ports with auto-detection"""
@@ -262,14 +329,14 @@ class RFIDReaderGUI(QMainWindow):
     
     def perform_single_read(self):
         """Perform a single RFID read operation"""
-        if not self.is_connected:
-            QMessageBox.warning(self, "Warning", "Please connect to a device first")
+        if not self.selected_reader:
+            QMessageBox.warning(self, "Warning", "Please detect and select a reader first")
             return
         
         self.single_read_button.setEnabled(False)
         self.status_bar.showMessage("Reading RFID tag...")
         
-        self._schedule_async_task(self.controller.perform_single_read())
+        self._schedule_async_task(self._perform_single_read_on_selected_reader())
     
     def display_result(self, result: str):
         """Display the read result in the text area"""
@@ -305,6 +372,83 @@ class RFIDReaderGUI(QMainWindow):
         if self.is_connected:
             self._schedule_async_task(self.controller.disconnect_from_port())
         event.accept()
+    
+    def setup_detection_manager(self):
+        """Setup the detection manager with all supported detectors"""
+        self.detection_manager.register_detector(R200DetectorAADD())
+        self.detection_manager.register_detector(R200DetectorBB7E())
+        self.detection_manager.register_detector(CF600Detector())
+        self.detection_manager.register_detector(HYB506Detector())
+        
+        QTimer.singleShot(1000, self.detect_readers)  # Delay 1 second after startup
+    
+    def detect_readers(self):
+        """Trigger reader detection process"""
+        self.detect_readers_button.setEnabled(False)
+        self.detect_readers_button.setText("Detecting...")
+        self.status_bar.showMessage("Detecting RFID readers...")
+        
+        self._schedule_async_task(self._perform_controller_detection())
+    
+    async def _perform_controller_detection(self):
+        """Perform async reader detection using controller"""
+        try:
+            await self.controller.detect_readers_async()
+        except Exception as e:
+            self.status_bar.showMessage(f"Detection error: {str(e)}")
+            self.display_error(f"Detection failed: {str(e)}")
+        finally:
+            self.detect_readers_button.setEnabled(True)
+            self.detect_readers_button.setText("Detect Readers")
+    
+    def _update_readers_list(self, detected_readers):
+        """Update the readers list widget with detected readers"""
+        self.readers_list.clear()
+        
+        for reader in detected_readers:
+            item = QListWidgetItem(str(reader))
+            item.setData(1, reader)  # Store DetectedReader object in item data
+            self.readers_list.addItem(item)
+        
+        if detected_readers:
+            self.readers_list.setCurrentRow(0)  # Select first reader by default
+            self.status_bar.showMessage(f"Found {len(detected_readers)} reader(s)")
+        else:
+            self.status_bar.showMessage("No readers detected")
+        
+        self.detect_readers_button.setEnabled(True)
+        self.detect_readers_button.setText("Detect Readers")
+    
+    def on_reader_selection_changed(self):
+        """Handle reader selection change"""
+        current_item = self.readers_list.currentItem()
+        if current_item:
+            self.selected_reader = current_item.data(1)
+            self.status_bar.showMessage(f"Selected: {self.selected_reader}")
+        else:
+            self.selected_reader = None
+    
+    async def _perform_single_read_on_selected_reader(self):
+        """Perform single read operation on the currently selected reader"""
+        try:
+            if not self.selected_reader:
+                self.display_error("No reader selected")
+                return
+            
+            if "R200" in self.selected_reader.reader_type:
+                controller = AsyncR200Interrogator()
+                await controller.connect_to_port(self.selected_reader.port)
+                result = await controller.perform_single_read()
+                await controller.disconnect_from_port()
+                self.display_result(f"Single read result from {self.selected_reader.reader_type}: {result}")
+            else:
+                self.display_error(f"Single read not yet implemented for {self.selected_reader.reader_type}")
+                
+        except Exception as e:
+            self.display_error(f"Single read failed: {str(e)}")
+        finally:
+            self.single_read_button.setEnabled(True)
+            self.status_bar.showMessage("Ready")
     
     def _schedule_async_task(self, coro):
         """Schedule an async task in the current event loop"""
