@@ -318,6 +318,24 @@ class R200Interrogator(InterrogatorAPI):
         cmd = generate_lock_command(bytes(LockCommandPayload(lockmode=LockMode.UNLOCKED)), bytes.fromhex('00000000'))
         self.send_command(cmd)
 
+    def detect_device(self):
+        result = self.send_command(CMD_MODULE_INFO)
+
+        # todo: parse result
+        # result is either BB 01 03 00 10 00 4D 31 30 30 20 32 36 64 42 6D 20 56 31 2E 30 92 7E
+        # or AA 01 03 00 10 00 4D 31 30 30 20 32 36 64 42 6D 20 56 31 2E 30 92 DD depending on flavor,
+        # with BB or AA being the start byte, 7E or DD the stop byte.
+        # the second byte 0x01 means the data direction is from reader to host, while 0x00 indicates host to reader communication, as in commands.
+        # 0x03 represents the CMD_MODULE_INFO command, followed by the 16 bit payload length 0x0010, i.e. we expect 16 bytes of payload here.
+        # The first byte of payload is "info type" being set to 0x00, followed by an ascii text string that is PL - 1 in length, i.e. 15 bytes here. This string should be displayer to the User.
+        # 0x92 is the check sum, which is the arithmetic sum of payload (c.f. the proof-of-concept implementation is parse().
+
+        if result[1] == 0x01 and result[2] == 0x03:
+            return True
+
+        return False
+
+
     def led_animate(self):
 
         tags = ["7882f903", "7882f904", "7882f905", "7882f906", "7882f907", "7882f908", "7882f909", "7882f90a"]
@@ -373,7 +391,9 @@ def main():
         gui_main()
     else:
         r200 = R200Interrogator(args.flavor)
-        
+
+        r200.detect_device()
+
         r200.send_command(CMD_DENSE_READER_MODE)
         
         if args.single:
