@@ -33,12 +33,7 @@ def detect_device():
     # result = send_command(command_with_checksum)    # not yet implemented
 
     # expected response: CF 01 00 50 01 00 A3 F5
-    if result[0] == 0xCF:
-        crc_expected = (result[-2] << 8) | result[-1]
-        crc_actual = crc(result[0:-2])
-
-        if crc_actual == crc_expected:
-            return True
+    # if result[0] == 0xCF:
 
     return False
 
