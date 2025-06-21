@@ -53,6 +53,14 @@ class DeviceDetector(ABC):
         """
         pass
     
+    @abstractmethod
+    def validate_response(self, response_data: bytes) -> bool:
+        """
+        Validate response data to determine if this device type is detected
+        Returns True if response indicates this device type, False otherwise
+        """
+        pass
+    
     async def _send_detection_command(self, port: str, command: bytes) -> Optional[bytes]:
         """
         Helper method to send detection command and receive response
@@ -168,7 +176,7 @@ class ReaderDetectionManager:
             detection_command = detector._get_detection_command()
             response_data = await detector._send_detection_command(port, detection_command)
             
-            if response_data and await detector.detect_device_async(port):
+            if response_data and detector.validate_response(response_data):
                 device_info = detector.get_device_info(response_data)
                 reader_type = detector.get_reader_type()
                 return DetectedReader(port, reader_type, device_info, type(detector))
@@ -188,26 +196,33 @@ class R200DetectorAADD(DeviceDetector):
         from r200 import CMD_MODULE_INFO
         return bytes(CMD_MODULE_INFO)
     
+    def validate_response(self, response_data: bytes) -> bool:
+        """Validate R200 AADD response format"""
+        try:
+            if not response_data or len(response_data) < 3:
+                return False
+            
+            if (response_data[0] == 0xAA and 
+                len(response_data) > 6 and 
+                response_data[1] == 0x01 and 
+                response_data[2] == 0x03 and
+                response_data[-1] == 0xDD):
+                return True
+                
+        except Exception as e:
+            print(f"R200 AADD validation error: {e}")
+        
+        return False
+    
     async def detect_device_async(self, port: str) -> bool:
         """Detect R200 AADD device by sending CMD_MODULE_INFO and checking response format"""
         try:
             command = self._get_detection_command()
             response = await self._send_detection_command(port, command)
-            
-            if not response or len(response) < 3:
-                return False
-            
-            if (response[0] == 0xAA and 
-                len(response) > 6 and 
-                response[1] == 0x01 and 
-                response[2] == 0x03 and
-                response[-1] == 0xDD):
-                return True
-                
+            return self.validate_response(response) if response else False
         except Exception as e:
             print(f"R200 AADD detection error on {port}: {e}")
-        
-        return False
+            return False
     
     def get_device_info(self, response_data: bytes) -> str:
         """Extract ASCII device info from CMD_MODULE_INFO response"""
@@ -232,26 +247,33 @@ class R200DetectorBB7E(DeviceDetector):
         command[0], command[-1] = 0xBB, 0x7E
         return bytes(command)
     
+    def validate_response(self, response_data: bytes) -> bool:
+        """Validate R200 BB7E response format"""
+        try:
+            if not response_data or len(response_data) < 3:
+                return False
+            
+            if (response_data[0] == 0xBB and 
+                len(response_data) > 6 and 
+                response_data[1] == 0x01 and 
+                response_data[2] == 0x03 and
+                response_data[-1] == 0x7E):
+                return True
+                
+        except Exception as e:
+            print(f"R200 BB7E validation error: {e}")
+        
+        return False
+    
     async def detect_device_async(self, port: str) -> bool:
         """Detect R200 BB7E device by sending CMD_MODULE_INFO and checking response format"""
         try:
             command = self._get_detection_command()
             response = await self._send_detection_command(port, command)
-            
-            if not response or len(response) < 3:
-                return False
-            
-            if (response[0] == 0xBB and 
-                len(response) > 6 and 
-                response[1] == 0x01 and 
-                response[2] == 0x03 and
-                response[-1] == 0x7E):
-                return True
-                
+            return self.validate_response(response) if response else False
         except Exception as e:
             print(f"R200 BB7E detection error on {port}: {e}")
-        
-        return False
+            return False
     
     def get_device_info(self, response_data: bytes) -> str:
         """Extract ASCII device info from CMD_MODULE_INFO response"""
@@ -276,27 +298,34 @@ class CF600Detector(DeviceDetector):
         command_with_checksum = rfm_module_int + bytes([(checksum & 0xFF00) >> 8, checksum & 0xFF])
         return command_with_checksum
     
-    async def detect_device_async(self, port: str) -> bool:
-        """Detect CF600 device by sending module info command and checking CRC"""
+    def validate_response(self, response_data: bytes) -> bool:
+        """Validate CF600 response format and CRC"""
         try:
-            command = self._get_detection_command()
-            response = await self._send_detection_command(port, command)
-            
-            if not response or len(response) < 4:
+            if not response_data or len(response_data) < 4:
                 return False
             
-            if response[0] == 0xCF and len(response) >= 4:
+            if response_data[0] == 0xCF and len(response_data) >= 4:
                 from chafon import crc
-                crc_expected = (response[-2] << 8) | response[-1]
-                crc_actual = crc(response[0:-2])
+                crc_expected = (response_data[-2] << 8) | response_data[-1]
+                crc_actual = crc(response_data[0:-2])
                 
                 if crc_actual == crc_expected:
                     return True
                     
         except Exception as e:
-            print(f"CF600 detection error on {port}: {e}")
+            print(f"CF600 validation error: {e}")
         
         return False
+    
+    async def detect_device_async(self, port: str) -> bool:
+        """Detect CF600 device by sending module info command and checking CRC"""
+        try:
+            command = self._get_detection_command()
+            response = await self._send_detection_command(port, command)
+            return self.validate_response(response) if response else False
+        except Exception as e:
+            print(f"CF600 detection error on {port}: {e}")
+            return False
     
     def get_device_info(self, response_data: bytes) -> str:
         """Extract device info from CF600 response"""
@@ -318,26 +347,33 @@ class HYB506Detector(DeviceDetector):
         from hyb506 import generate_command
         return bytes(generate_command(0x21))
     
-    async def detect_device_async(self, port: str) -> bool:
-        """Detect HYB506 device by sending reader info command and checking CRC"""
+    def validate_response(self, response_data: bytes) -> bool:
+        """Validate HYB506 response format and CRC"""
         try:
-            command = self._get_detection_command()
-            response = await self._send_detection_command(port, command)
-            
-            if not response or len(response) < 4:
+            if not response_data or len(response_data) < 4:
                 return False
             
             from hyb506 import crc16
-            crc_expected = (response[-1] << 8) | response[-2]  # Note: byte order may vary
-            crc_actual = crc16(response[0:-2])
+            crc_expected = (response_data[-1] << 8) | response_data[-2]  # Note: byte order may vary
+            crc_actual = crc16(response_data[0:-2])
             
             if crc_actual == crc_expected:
                 return True
                 
         except Exception as e:
-            print(f"HYB506 detection error on {port}: {e}")
+            print(f"HYB506 validation error: {e}")
         
         return False
+    
+    async def detect_device_async(self, port: str) -> bool:
+        """Detect HYB506 device by sending reader info command and checking CRC"""
+        try:
+            command = self._get_detection_command()
+            response = await self._send_detection_command(port, command)
+            return self.validate_response(response) if response else False
+        except Exception as e:
+            print(f"HYB506 detection error on {port}: {e}")
+            return False
     
     def get_device_info(self, response_data: bytes) -> str:
         """Extract device info from HYB506 response"""
