@@ -11,10 +11,7 @@ from PyQt6.QtGui import QFont
 import serial.tools.list_ports
 from transport import SerialTransport
 from serialinterface import AsyncR200Interrogator
-from device_detection import (
-    ReaderDetectionManager, R200DetectorAADD, R200DetectorBB7E, 
-    CF600Detector, HYB506Detector, DetectedReader
-)
+from device_detection import ReaderDetectionManager, DetectedReader
 
 try:
     import qasyncio
@@ -88,11 +85,6 @@ class AsyncController(QObject):
     async def detect_readers_async(self):
         """Detect all available readers and emit results"""
         try:
-            self.detection_manager.register_detector(R200DetectorAADD())
-            self.detection_manager.register_detector(R200DetectorBB7E())
-            self.detection_manager.register_detector(CF600Detector())
-            self.detection_manager.register_detector(HYB506Detector())
-            
             detected_readers = await self.detection_manager.detect_all_readers_async()
             
             self.detected_readers.clear()
@@ -374,12 +366,7 @@ class RFIDReaderGUI(QMainWindow):
         event.accept()
     
     def setup_detection_manager(self):
-        """Setup the detection manager with all supported detectors"""
-        self.detection_manager.register_detector(R200DetectorAADD())
-        self.detection_manager.register_detector(R200DetectorBB7E())
-        self.detection_manager.register_detector(CF600Detector())
-        self.detection_manager.register_detector(HYB506Detector())
-        
+        """Setup the detection manager"""
         QTimer.singleShot(1000, self.detect_readers)  # Delay 1 second after startup
     
     def detect_readers(self):

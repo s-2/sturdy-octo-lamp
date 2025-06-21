@@ -61,17 +61,65 @@ def detect_device():
     reader_info_cmd = generate_command(0x21)
 
     # todo: send to serial port
-    result = send_command(reader_info_cmd)  # not yet implemented
+    # result = send_command(reader_info_cmd)  # not yet implemented
 
-    result_length = result[0]
-    crc_expected = (result[-2] << 8) | result[-1]
-    crc_actual = crc16(result[0:-2])
+    # result_length = result[0]
+    # crc_expected = (result[-2] << 8) | result[-1]
+    # crc_actual = crc16(result[0:-2])
 
     # just accept any response with valid crc for now
-    if crc_actual == crc_expected:
-        return True
+    # if crc_actual == crc_expected:
+    #     return True
 
     return False
+
+async def detect_device_async(port: str) -> tuple[bool, str]:
+    """Detect HYB506 device on specified port and return success status with device info"""
+    import asyncio
+    from transport import SerialTransport
+    
+    transport = None
+    try:
+        transport = SerialTransport(port, timeout=2.0)
+        if not await transport.connect():
+            return False, ""
+        
+        response_data = bytearray()
+        response_received = asyncio.Event()
+        
+        def data_callback(data: bytes):
+            response_data.extend(data)
+            response_received.set()
+        
+        transport.set_data_callback(data_callback)
+        
+        reader_info_cmd = generate_command(0x21)
+        await transport.write(bytes(reader_info_cmd))
+        
+        try:
+            await asyncio.wait_for(response_received.wait(), timeout=2.0)
+            result = bytes(response_data)
+            
+            if len(result) >= 4:
+                crc_expected = (result[-1] << 8) | result[-2]
+                crc_actual = crc16(result[0:-2])
+                
+                if crc_actual == crc_expected:
+                    result_length = result[0]
+                    device_info = f"HYB506 Reader (Length: {result_length})"
+                    return True, device_info
+            
+            return False, ""
+            
+        except asyncio.TimeoutError:
+            return False, ""
+            
+    except Exception as e:
+        print(f"HYB506 detection error on {port}: {e}")
+        return False, ""
+    finally:
+        if transport:
+            await transport.disconnect()
 
 
 

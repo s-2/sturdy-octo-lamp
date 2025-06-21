@@ -30,7 +30,7 @@ def detect_device():
     command_with_checksum = rfm_module_int + bytes([(checksum & 0xFF00) >> 8, checksum & 0xFF])  # expected command_with_checksum: CF FF 00 50 00 07 26
 
     # todo: send to serial device
-    result = send_command(command_with_checksum)    # not yet implemented
+    # result = send_command(command_with_checksum)    # not yet implemented
 
     # expected response: CF 01 00 50 01 00 A3 F5
     if result[0] == 0xCF:
@@ -41,3 +41,52 @@ def detect_device():
             return True
 
     return False
+
+async def detect_device_async(port: str) -> tuple[bool, str]:
+    """Detect CF600 device on specified port and return success status with device info"""
+    import asyncio
+    from transport import SerialTransport
+    
+    transport = None
+    try:
+        transport = SerialTransport(port, timeout=2.0)
+        if not await transport.connect():
+            return False, ""
+        
+        response_data = bytearray()
+        response_received = asyncio.Event()
+        
+        def data_callback(data: bytes):
+            response_data.extend(data)
+            response_received.set()
+        
+        transport.set_data_callback(data_callback)
+        
+        checksum = crc(rfm_module_int)
+        command_with_checksum = rfm_module_int + bytes([(checksum & 0xFF00) >> 8, checksum & 0xFF])
+        
+        await transport.write(command_with_checksum)
+        
+        try:
+            await asyncio.wait_for(response_received.wait(), timeout=2.0)
+            result = bytes(response_data)
+            
+            if len(result) >= 4 and result[0] == 0xCF:
+                crc_expected = (result[-2] << 8) | result[-1]
+                crc_actual = crc(result[0:-2])
+                
+                if crc_actual == crc_expected:
+                    device_info = f"CF600 Reader (Response: {' '.join(f'{b:02X}' for b in result[:8])})"
+                    return True, device_info
+            
+            return False, ""
+            
+        except asyncio.TimeoutError:
+            return False, ""
+            
+    except Exception as e:
+        print(f"CF600 detection error on {port}: {e}")
+        return False, ""
+    finally:
+        if transport:
+            await transport.disconnect()
