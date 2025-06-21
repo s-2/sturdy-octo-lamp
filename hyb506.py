@@ -80,7 +80,7 @@ async def detect_device_async(port: str) -> tuple[bool, str]:
     
     transport = None
     try:
-        transport = SerialTransport(port, timeout=2.0)
+        transport = SerialTransport(port, baudrate=57600, timeout=2.0)
         if not await transport.connect():
             return False, ""
         
