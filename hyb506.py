@@ -85,11 +85,22 @@ async def detect_device_async(port: str) -> tuple[bool, str]:
             return False, ""
         
         response_data = bytearray()
-        response_received = asyncio.Event()
+        last_data_time = None
+        data_settling_task = None
+        response_ready = asyncio.Event()
+        
+        async def settle_data():
+            await asyncio.sleep(0.2)  # Wait 0.2 seconds for data to settle
+            response_ready.set()
         
         def data_callback(data: bytes):
+            nonlocal last_data_time, data_settling_task
             response_data.extend(data)
-            response_received.set()
+            last_data_time = asyncio.get_event_loop().time()
+            
+            if data_settling_task and not data_settling_task.done():
+                data_settling_task.cancel()
+            data_settling_task = asyncio.create_task(settle_data())
         
         transport.set_data_callback(data_callback)
         
@@ -97,7 +108,7 @@ async def detect_device_async(port: str) -> tuple[bool, str]:
         await transport.write(bytes(reader_info_cmd))
         
         try:
-            await asyncio.wait_for(response_received.wait(), timeout=2.0)
+            await asyncio.wait_for(response_ready.wait(), timeout=2.0)
             result = bytes(response_data)
             
             if len(result) >= 4:
