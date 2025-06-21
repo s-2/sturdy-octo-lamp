@@ -4,6 +4,7 @@ from pyrainrfid import MemBank
 
 """hyintech HYB506"""
 
+# device serial protocol described in `docs/UHFReader06 UHF RFID Reader User's Manual V1.7.doc`
 
 def crc16(data):
     crc = 0xffff
@@ -56,8 +57,23 @@ def generate_write_command(write_data, write_offset, write_len, tag_epc_len, tag
     return generate_command(0x03, write_command)
 
 
-reader_info_cmd = generate_command(0x21)
-print(binascii.hexlify(reader_info_cmd))
+def detect_device():
+    reader_info_cmd = generate_command(0x21)
+
+    # todo: send to serial port
+    result = send_command(reader_info_cmd)  # not yet implemented
+
+    result_length = result[0]
+    crc_expected = (result[-2] << 8) | result[-1]
+    crc_actual = crc16(result[0:-2])
+
+    # just accept any response with valid crc for now
+    if crc_actual == crc_expected:
+        return True
+
+    return False
+
+
 
 led_buzzer_cmd = generate_command(0x33, bytes([1, 1, 2]))
 print(binascii.hexlify(led_buzzer_cmd))
