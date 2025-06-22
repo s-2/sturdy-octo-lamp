@@ -335,6 +335,73 @@ class R200Interrogator(InterrogatorAPI):
 
         return False
 
+    async def detect_device_async(self, port: str) -> tuple[bool, str]:
+        """Detect R200 device on specified port and return success status with device info"""
+        import asyncio
+        from transport import SerialTransport
+        
+        transport = None
+        try:
+            transport = SerialTransport(port, timeout=2.0)
+            if not await transport.connect():
+                return False, ""
+            
+            response_data = bytearray()
+            last_data_time = None
+            data_settling_task = None
+            response_ready = asyncio.Event()
+            
+            async def settle_data():
+                await asyncio.sleep(0.2)  # Wait 0.2 seconds for data to settle
+                response_ready.set()
+            
+            def data_callback(data: bytes):
+                nonlocal last_data_time, data_settling_task
+                response_data.extend(data)
+                last_data_time = asyncio.get_event_loop().time()
+                
+                if data_settling_task and not data_settling_task.done():
+                    data_settling_task.cancel()
+                data_settling_task = asyncio.create_task(settle_data())
+            
+            transport.set_data_callback(data_callback)
+            
+            command = bytes(CMD_MODULE_INFO)
+            if self.flavor == 'BB7E':
+                command = bytearray(command)
+                command[0], command[-1] = 0xBB, 0x7E
+                command = bytes(command)
+            
+            await transport.write(command)
+            
+            try:
+                await asyncio.wait_for(response_ready.wait(), timeout=2.0)
+                result = bytes(response_data)
+                
+                if (len(result) >= 3 and result[1] == 0x01 and result[2] == 0x03 and
+                    ((self.flavor == 'AADD' and result[0] == 0xAA and result[-1] == 0xDD) or
+                     (self.flavor == 'BB7E' and result[0] == 0xBB and result[-1] == 0x7E))):
+                    
+                    if len(result) >= 22:
+                        ascii_text = result[6:21].decode('ascii', errors='ignore').strip()
+                        device_info = ascii_text if ascii_text else "R200 Reader"
+                    else:
+                        device_info = "R200 Reader"
+                    
+                    return True, device_info
+                
+                return False, ""
+                
+            except asyncio.TimeoutError:
+                return False, ""
+                
+        except Exception as e:
+            print(f"R200 detection error on {port}: {e}")
+            return False, ""
+        finally:
+            if transport:
+                await transport.disconnect()
+
 
     def led_animate(self):
 
