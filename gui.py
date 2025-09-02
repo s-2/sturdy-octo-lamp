@@ -12,6 +12,8 @@ import serial.tools.list_ports
 from transport import SerialTransport
 from serialinterface import AsyncR200Interrogator
 from device_detection import ReaderDetectionManager, DetectedReader
+from hyb506 import AsyncHYB506Interrogator
+from chafon import AsyncChafonInterrogator
 
 try:
     import qasyncio
@@ -32,7 +34,7 @@ class AsyncController(QObject):
         super().__init__()
         self.interrogator: Optional[AsyncR200Interrogator] = None
         self.transport: Optional[SerialTransport] = None
-        self.detected_readers = {}  # Dictionary to track reader instances by port
+        self.detected_readers = {}
         self.detection_manager = ReaderDetectionManager()
     
     async def connect_to_port(self, port: str, flavor: str = 'AADD'):
@@ -85,14 +87,39 @@ class AsyncController(QObject):
     async def detect_readers_async(self):
         """Detect all available readers and emit results"""
         try:
-            detected_readers = await self.detection_manager.detect_all_readers_async()
-            
+            for port, ctx in list(self.detected_readers.items()):
+                try:
+                    interrogator = ctx.get('interrogator')
+                    if interrogator:
+                        await interrogator.disconnect()
+                except Exception:
+                    pass
             self.detected_readers.clear()
+
+            detected_readers = await self.detection_manager.detect_all_readers_async()
+
             for reader in detected_readers:
-                self.detected_readers[reader.port] = reader
-            
+                interrogator = None
+                transport = None
+                try:
+                    if "R200" in reader.reader_type:
+                        flavor = 'AADD' if 'AADD' in reader.reader_type else 'BB7E'
+                        transport = SerialTransport(reader.port)
+                        interrogator = AsyncR200Interrogator(transport, flavor)
+                    elif reader.reader_type == "HYB506":
+                        transport = SerialTransport(reader.port, baudrate=57600)
+                        interrogator = AsyncHYB506Interrogator(transport)
+                    elif reader.reader_type == "CF600":
+                        transport = SerialTransport(reader.port)
+                        interrogator = AsyncChafonInterrogator(transport)
+                    if interrogator:
+                        await interrogator.connect()
+                    self.detected_readers[reader.port] = {'meta': reader, 'interrogator': interrogator}
+                except Exception as e:
+                    self.error_occurred.emit(f"Auto-connect error on {reader.port}: {str(e)}")
+
             self.readers_detected.emit(detected_readers)
-            
+
         except Exception as e:
             self.error_occurred.emit(f"Detection error: {str(e)}")
     
@@ -317,17 +344,29 @@ class RFIDReaderGUI(QMainWindow):
     
     def disconnect(self):
         """Disconnect from the current port"""
-        self._schedule_async_task(self.controller.disconnect_from_port())
+        async def _do_disconnect():
+            try:
+                if self.selected_reader and self.selected_reader.port in self.controller.detected_readers:
+                    ctx = self.controller.detected_readers.get(self.selected_reader.port)
+                    if ctx and ctx.get('interrogator'):
+                        await ctx['interrogator'].disconnect()
+                        self.controller.detected_readers[self.selected_reader.port]['interrogator'] = None
+                        self.status_bar.showMessage(f"Disconnected {self.selected_reader.port}")
+                else:
+                    await self.controller.disconnect_from_port()
+            except Exception as e:
+                self.display_error(f"Disconnect error: {str(e)}")
+        self._schedule_async_task(_do_disconnect())
     
     def perform_single_read(self):
         """Perform a single RFID read operation"""
         if not self.selected_reader:
             QMessageBox.warning(self, "Warning", "Please detect and select a reader first")
             return
-        
+
         self.single_read_button.setEnabled(False)
         self.status_bar.showMessage("Reading RFID tag...")
-        
+
         self._schedule_async_task(self._perform_single_read_on_selected_reader())
     
     def display_result(self, result: str):
@@ -391,18 +430,20 @@ class RFIDReaderGUI(QMainWindow):
     def _update_readers_list(self, detected_readers):
         """Update the readers list widget with detected readers"""
         self.readers_list.clear()
-        
+
         for reader in detected_readers:
             item = QListWidgetItem(str(reader))
-            item.setData(1, reader)  # Store DetectedReader object in item data
+            item.setData(1, reader)
             self.readers_list.addItem(item)
-        
+
         if detected_readers:
-            self.readers_list.setCurrentRow(0)  # Select first reader by default
+            self.readers_list.setCurrentRow(0)
             self.status_bar.showMessage(f"Found {len(detected_readers)} reader(s)")
+            self.single_read_button.setEnabled(True)
         else:
             self.status_bar.showMessage("No readers detected")
-        
+            self.single_read_button.setEnabled(False)
+
         self.detect_readers_button.setEnabled(True)
         self.detect_readers_button.setText("Detect Readers")
     
@@ -412,8 +453,10 @@ class RFIDReaderGUI(QMainWindow):
         if current_item:
             self.selected_reader = current_item.data(1)
             self.status_bar.showMessage(f"Selected: {self.selected_reader}")
+            self.single_read_button.setEnabled(True)
         else:
             self.selected_reader = None
+            self.single_read_button.setEnabled(False)
     
     async def _perform_single_read_on_selected_reader(self):
         """Perform single read operation on the currently selected reader"""
@@ -421,16 +464,42 @@ class RFIDReaderGUI(QMainWindow):
             if not self.selected_reader:
                 self.display_error("No reader selected")
                 return
-            
-            if "R200" in self.selected_reader.reader_type:
-                controller = AsyncR200Interrogator()
-                await controller.connect_to_port(self.selected_reader.port)
-                result = await controller.perform_single_read()
-                await controller.disconnect_from_port()
-                self.display_result(f"Single read result from {self.selected_reader.reader_type}: {result}")
+
+            port = self.selected_reader.port
+            ctx = self.controller.detected_readers.get(port)
+            interrogator = None
+
+            if ctx and ctx.get('interrogator'):
+                interrogator = ctx['interrogator']
             else:
-                self.display_error(f"Single read not yet implemented for {self.selected_reader.reader_type}")
-                
+                if "R200" in self.selected_reader.reader_type:
+                    flavor = 'AADD' if 'AADD' in self.selected_reader.reader_type else 'BB7E'
+                    transport = SerialTransport(port)
+                    interrogator = AsyncR200Interrogator(transport, flavor)
+                elif self.selected_reader.reader_type == "HYB506":
+                    transport = SerialTransport(port, baudrate=57600)
+                    interrogator = AsyncHYB506Interrogator(transport)
+                elif self.selected_reader.reader_type == "CF600":
+                    transport = SerialTransport(port)
+                    interrogator = AsyncChafonInterrogator(transport)
+                if interrogator:
+                    await interrogator.connect()
+                    self.controller.detected_readers[port] = {'meta': self.selected_reader, 'interrogator': interrogator}
+
+            if not interrogator:
+                self.display_error(f"Unsupported reader type: {self.selected_reader.reader_type}")
+                return
+
+            result = await interrogator.read_single()
+            if result:
+                if isinstance(result, bytes):
+                    hex_result = ''.join('{:02X}'.format(x) for x in result)
+                else:
+                    hex_result = result
+                self.display_result(f"{self.selected_reader.reader_type}: {hex_result}")
+            else:
+                self.display_result(f"{self.selected_reader.reader_type}: No tag detected or timeout")
+
         except Exception as e:
             self.display_error(f"Single read failed: {str(e)}")
         finally:

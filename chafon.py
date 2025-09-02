@@ -1,3 +1,4 @@
+import asyncio
 import binascii
 
 """Chafon CF600 reader"""
@@ -96,3 +97,48 @@ async def detect_device_async(port: str) -> tuple[bool, str]:
     finally:
         if transport:
             await transport.disconnect()
+class AsyncChafonInterrogator:
+    def __init__(self, transport):
+        self.transport = transport
+        self._buf = bytearray()
+        self._ready = None
+
+    async def connect(self) -> bool:
+        self.transport.set_data_callback(self._on_data)
+        return await self.transport.connect()
+
+    async def disconnect(self) -> None:
+        await self.transport.disconnect()
+
+    def _on_data(self, data: bytes):
+        self._buf.extend(data)
+        if self._ready is not None and not self._ready.is_set():
+            self._ready.set()
+
+    async def read_single(self):
+        self._buf.clear()
+        self._ready = asyncio.Event()
+        checksum = crc(fivesecondsinventory)
+        cmd = fivesecondsinventory + bytes([(checksum & 0xFF00) >> 8, checksum & 0xFF])
+        await self.transport.write(cmd)
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            return None
+        result = bytes(self._buf)
+        if len(result) < 7:
+            return None
+        if result[0] != 0xCF:
+            return None
+        crc_expected = (result[-2] << 8) | result[-1]
+        crc_actual = crc(result[0:-2])
+        if crc_actual != crc_expected:
+            return None
+        length_pos = 4
+        payload_len = result[length_pos]
+        start = length_pos + 1
+        end = start + payload_len
+        if end > len(result) - 2:
+            return None
+        payload = result[start:end]
+        return binascii.hexlify(payload).decode("ascii")

@@ -1,3 +1,4 @@
+import asyncio
 import binascii
 
 from pyrainrfid import MemBank
@@ -59,18 +60,6 @@ def generate_write_command(write_data, write_offset, write_len, tag_epc_len, tag
 
 def detect_device():
     reader_info_cmd = generate_command(0x21)
-
-    # todo: send to serial port
-    # result = send_command(reader_info_cmd)  # not yet implemented
-
-    # result_length = result[0]
-    # crc_expected = (result[-2] << 8) | result[-1]
-    # crc_actual = crc16(result[0:-2])
-
-    # just accept any response with valid crc for now
-    # if crc_actual == crc_expected:
-    #     return True
-
     return False
 
 async def detect_device_async(port: str) -> tuple[bool, str]:
@@ -135,6 +124,49 @@ async def detect_device_async(port: str) -> tuple[bool, str]:
 
 
 led_buzzer_cmd = generate_command(0x33, bytes([1, 1, 2]))
+class AsyncHYB506Interrogator:
+    def __init__(self, transport):
+        self.transport = transport
+        self._buf = bytearray()
+        self._ready = None
+
+    async def connect(self) -> bool:
+        self.transport.set_data_callback(self._on_data)
+        return await self.transport.connect()
+
+    async def disconnect(self) -> None:
+        await self.transport.disconnect()
+
+    def _on_data(self, data: bytes):
+        self._buf.extend(data)
+        if self._ready is not None and not self._ready.is_set():
+            self._ready.set()
+
+    async def read_single(self):
+        self._buf.clear()
+        self._ready = asyncio.Event()
+        cmd = generate_command(0x01)
+        await self.transport.write(bytes(cmd))
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            return None
+        result = bytes(self._buf)
+        if len(result) < 4:
+            return None
+        crc_expected = (result[-1] << 8) | result[-2]
+        crc_actual = crc16(result[0:-2])
+        if crc_actual != crc_expected:
+            return None
+        size = result[0]
+        if size < 4 or len(result) < size + 1:
+            return None
+        payload_len = size - 4
+        if payload_len <= 0:
+            return None
+        payload = result[3:3 + payload_len]
+        return binascii.hexlify(payload).decode("ascii")
+
 print(binascii.hexlify(led_buzzer_cmd))
 
 inventory_cmd = generate_command(0x01)
