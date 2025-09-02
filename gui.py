@@ -466,7 +466,7 @@ class RFIDReaderGUI(QMainWindow):
                 return
 
             port = self.selected_reader.port
-            ctx = self.detected_readers.get(port)
+            ctx = self.controller.detected_readers.get(port)
             interrogator = None
 
             if ctx and ctx.get('interrogator'):
@@ -484,7 +484,7 @@ class RFIDReaderGUI(QMainWindow):
                     interrogator = AsyncChafonInterrogator(transport)
                 if interrogator:
                     await interrogator.connect()
-                    self.detected_readers[port] = {'meta': self.selected_reader, 'interrogator': interrogator}
+                    self.controller.detected_readers[port] = {'meta': self.selected_reader, 'interrogator': interrogator}
 
             if not interrogator:
                 self.display_error(f"Unsupported reader type: {self.selected_reader.reader_type}")
