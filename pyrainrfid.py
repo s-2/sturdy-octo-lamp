@@ -1,4 +1,7 @@
 import binascii
+import sys
+import asyncio
+import argparse
 from enum import IntEnum
 
 
@@ -91,10 +94,9 @@ class SelectParams:
     :param mask_offset: start position in bits (not words) of mask; default 0x20 (start of EPC)
     :type membank: MemBank
     """
-
     def __init__(self, mask_compare, mask_len=None, mask_offset=0x20,
                  membank=MemBank.EPC_UII, target=0b000, action=0b000, truncate=False):
-        self.mask_compare = mask_compare  # todo: ensure bytes-like; allow hex string as parameter?
+        self.mask_compare = mask_compare
         if mask_compare is None or len(mask_compare) == 0:
             raise ValueError("no select mask given")
         if mask_len is None:
@@ -108,4 +110,132 @@ class SelectParams:
         self.action = action
         self.truncate = truncate
 
-        # todo: raise ValueErrors for invalid parameters
+
+async def _cli_autodetect_and_optionally_single(do_single: bool):
+    from device_detection import ReaderDetectionManager
+    from transport import SerialTransport
+    from serialinterface import AsyncR200Interrogator
+    from hyb506 import AsyncHYB506Interrogator
+    from chafon import AsyncChafonInterrogator
+
+    mgr = ReaderDetectionManager()
+    readers = await mgr.detect_all_readers_async()
+    if not readers:
+        print("No readers detected.")
+        return
+
+    for r in readers:
+        print(str(r))
+
+    if not do_single:
+        return
+
+    async def run_single_for_reader(r):
+        interrogator = None
+        transport = None
+        try:
+            if r.reader_type.startswith("R200"):
+                flavor = 'AADD' if 'AADD' in r.reader_type else 'BB7E'
+                transport = SerialTransport(r.port)
+                interrogator = AsyncR200Interrogator(transport, flavor)
+            elif r.reader_type == "HYB506":
+                transport = SerialTransport(r.port, baudrate=57600)
+                interrogator = AsyncHYB506Interrogator(transport)
+            elif r.reader_type == "CF600":
+                transport = SerialTransport(r.port)
+                interrogator = AsyncChafonInterrogator(transport)
+            else:
+                print(f"Unsupported reader type for single read: {r.reader_type}")
+                return
+
+            ok = await interrogator.connect()
+            if not ok:
+                print(f"{r.reader_type} on {r.port}: connect failed")
+                return
+            result = await interrogator.read_single()
+            if result is None:
+                print(f"{r.reader_type} on {r.port}: No tag or timeout")
+            else:
+                if isinstance(result, bytes):
+                    hex_result = ''.join('{:02X}'.format(x) for x in result)
+                else:
+                    hex_result = result
+                print(f"{r.reader_type} on {r.port}: {hex_result}")
+        finally:
+            if interrogator:
+                await interrogator.disconnect()
+
+    for r in readers:
+        await run_single_for_reader(r)
+
+
+async def _cli_single(reader_type: str, port: str):
+    from transport import SerialTransport
+    from serialinterface import AsyncR200Interrogator
+    from hyb506 import AsyncHYB506Interrogator
+    from chafon import AsyncChafonInterrogator
+
+    interrogator = None
+    try:
+        if reader_type == 'r200-aadd':
+            transport = SerialTransport(port)
+            interrogator = AsyncR200Interrogator(transport, 'AADD')
+        elif reader_type == 'r200-bb7e':
+            transport = SerialTransport(port)
+            interrogator = AsyncR200Interrogator(transport, 'BB7E')
+        elif reader_type == 'hyb506':
+            transport = SerialTransport(port, baudrate=57600)
+            interrogator = AsyncHYB506Interrogator(transport)
+        elif reader_type == 'chafon':
+            transport = SerialTransport(port)
+            interrogator = AsyncChafonInterrogator(transport)
+        else:
+            print("Unsupported reader type.")
+            return
+
+        ok = await interrogator.connect()
+        if not ok:
+            print("Failed to connect.")
+            return
+        result = await interrogator.read_single()
+        if result is None:
+            print("No tag detected or timeout")
+        else:
+            if isinstance(result, bytes):
+                hex_result = ''.join('{:02X}'.format(x) for x in result)
+            else:
+                hex_result = result
+            print(hex_result)
+    finally:
+        if interrogator:
+            await interrogator.disconnect()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='RAIN RFID Reader Control')
+    parser.add_argument('--mode', choices=['cli', 'gui'], default='cli')
+    parser.add_argument('--port', default='/dev/ttyUSB0')
+    parser.add_argument('--reader-type', choices=['r200-aadd', 'r200-bb7e', 'hyb506', 'chafon'])
+    parser.add_argument('--single', action='store_true')
+    parser.add_argument('--autodetect', action='store_true')
+
+    args = parser.parse_args()
+
+    if args.mode == 'gui':
+        from gui import main as gui_main
+        gui_main()
+        return
+
+    if args.autodetect:
+        asyncio.run(_cli_autodetect_and_optionally_single(args.single))
+        return
+
+    if args.single and args.reader_type and args.port:
+        asyncio.run(_cli_single(args.reader_type, args.port))
+        return
+
+    parser.print_help()
+
+
+if __name__ == '__main__':
+    main()
